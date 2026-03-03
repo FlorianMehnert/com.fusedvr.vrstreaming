@@ -46,7 +46,7 @@
     "url": "https://www.fusedvr.com"
   },
   "type": "tool",
-  "unity": "6000.3.9f",
+  "unity": "6000.3",
   "hideInEditor": false,
   "license": "See LICENSE.md file"
 }
