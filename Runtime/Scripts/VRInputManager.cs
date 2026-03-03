@@ -38,11 +38,6 @@ namespace FusedVR.VRStreaming {
         public VRCamStream VRCameras;
 
         /// <summary>
-        /// Remote Input class to capture Remote Input and incorporate into Unity Input System
-        /// </summary>
-        private RemoteInput remoteInput;
-
-        /// <summary>
         /// Utilized solely for 2D Camera Controls (Mouse, Touch , Keyboard)
         /// </summary>
         private CameraControls camControls;
@@ -134,25 +129,6 @@ namespace FusedVR.VRStreaming {
         }
 
         public override void SetChannel(string connectionId, RTCDataChannel channel) {
-            if (channel == null) {
-                if (remoteInput != null) {
-                    remoteInput.Dispose();
-
-                    onDeviceChange?.Invoke(remoteInput.RemoteKeyboard, InputDeviceChange.Removed);
-                    onDeviceChange?.Invoke(remoteInput.RemoteMouse, InputDeviceChange.Removed);
-                    onDeviceChange?.Invoke(remoteInput.RemoteTouchscreen, InputDeviceChange.Removed);
-
-                    remoteInput = null;
-                }
-            } else {
-                remoteInput = RemoteInputReceiver.Create();
-                onDeviceChange?.Invoke(remoteInput.RemoteKeyboard , InputDeviceChange.Added);
-                onDeviceChange?.Invoke(remoteInput.RemoteMouse, InputDeviceChange.Added);
-                onDeviceChange?.Invoke(remoteInput.RemoteTouchscreen, InputDeviceChange.Added);
-
-                channel.OnMessage += remoteInput.ProcessInput;
-            }
-
             base.SetChannel(connectionId, channel);
         }
 

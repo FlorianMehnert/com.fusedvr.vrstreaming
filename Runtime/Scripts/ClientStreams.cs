@@ -104,15 +104,9 @@ namespace FusedVR.VRStreaming {
         /// Clean up streams for a disconnected client
         /// </summary>
         public void DeleteConnection(string connectionID) {
-
             if (myConnection == connectionID) {
-                foreach (StreamSenderBase source in streams) {
-                    source.SetSender(myConnection, null);
-                }
-
                 dataChannel.SetChannel(myConnection, null);
-
-                myConnection = null; //remove ID
+                myConnection = null;
             }
         }
     }
