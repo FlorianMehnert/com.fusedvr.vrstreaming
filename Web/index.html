@@ -1,0 +1,178 @@
+﻿<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Custom Cloud VR Streamer</title>
+    <!-- Import A-Frame for WebXR support -->
+    <script src="https://aframe.io/releases/1.2.0/aframe.min.js"></script>
+    <style>
+        body { font-family: sans-serif; margin: 0; background-color: #222; }
+        #ui-container {
+            position: absolute; top: 15px; left: 15px; z-index: 9999;
+            background: rgba(20, 20, 20, 0.9); color: #fff; padding: 20px;
+            border-radius: 8px; box-shadow: 0 4px 6px rgba(0,0,0,0.3);
+        }
+        button, input { margin-top: 10px; padding: 8px 12px; font-size: 14px; cursor: pointer; }
+        button { background-color: #e01a4f; color: white; border: none; border-radius: 4px; }
+        button:hover { background-color: #b0153f; }
+    </style>
+</head>
+<body>
+
+<!-- 2D User Interface -->
+<div id="ui-container">
+    <h2>WebXR Unity Stream</h2>
+    <input type="text" id="gameID" placeholder="Game ID (Leave blank if none)"><br>
+    <button id="connectBtn">Connect to Cloud Server</button>
+    <button id="enterVRBtn" style="display: none;">Enter Virtual Reality</button>
+    <p id="status">Status: Disconnected</p>
+</div>
+
+<!-- Hidden video element to receive the WebRTC stream from Unity -->
+<video id="remoteVideo" autoplay playsinline style="display: none;"></video>
+
+<!-- A-Frame 3D Scene -->
+<a-scene embedded vr-mode-ui="enabled: false">
+    <!-- Render the Unity Video Stream around the user -->
+    <a-sky src="#remoteVideo" rotation="0 -90 0"></a-sky>
+
+    <!-- Player Camera & Controller tracking points -->
+    <a-entity id="cameraRig">
+        <a-camera id="head" position="0 1.6 0"></a-camera>
+        <a-entity id="leftHand" laser-controls="hand: left"></a-entity>
+        <a-entity id="rightHand" laser-controls="hand: right"></a-entity>
+    </a-entity>
+</a-scene>
+
+<script>
+    const SIGNALING_URL = "wss://webrtc-pcehljv7ea-uw.a.run.app";
+    let pc, dataChannel, ws;
+    let connectionId = Math.random().toString(36).substring(2, 15);
+
+    const statusText = document.getElementById("status");
+    const connectBtn = document.getElementById("connectBtn");
+    const enterVRBtn = document.getElementById("enterVRBtn");
+    const scene = document.querySelector('a-scene');
+
+    // --- 1. SIGNALING & WEBRTC SETUP ---
+    connectBtn.onclick = () => {
+        statusText.innerText = "Status: Connecting to signaling server...";
+        ws = new WebSocket(SIGNALING_URL);
+
+        ws.onopen = () => {
+            statusText.innerText = "Status: Connected. Negotiating WebRTC...";
+            setupWebRTC();
+        };
+
+        ws.onmessage = (event) => {
+            let msg = JSON.parse(event.data);
+            if (msg.connectionId !== connectionId) return;
+
+            if (msg.type === "answer" && pc) {
+                pc.setRemoteDescription(new RTCSessionDescription({ type: "answer", sdp: msg.sdp }));
+            } else if (msg.type === "candidate" && pc) {
+                pc.addIceCandidate(new RTCIceCandidate(msg));
+            }
+        };
+    };
+
+    function setupWebRTC() {
+        pc = new RTCPeerConnection({ iceServers: [{ urls: "stun:stun.l.google.com:19302" }] });
+
+        // Receive Video Stream from Unity
+        pc.ontrack = (event) => {
+            document.getElementById("remoteVideo").srcObject = event.streams[0];
+            statusText.innerText = "Status: Video Stream Received!";
+            connectBtn.style.display = "none";
+            enterVRBtn.style.display = "block";
+        };
+
+        // Send ICE Candidates to Unity
+        pc.onicecandidate = (event) => {
+            if (event.candidate) {
+                ws.send(JSON.stringify({
+                    type: "candidate", connectionId: connectionId,
+                    candidate: event.candidate.candidate,
+                    sdpMLineIndex: event.candidate.sdpMLineIndex,
+                    sdpMid: event.candidate.sdpMid
+                }));
+            }
+        };
+
+        // Create Data Channel for Tracking Inputs
+        dataChannel = pc.createDataChannel("data");
+        dataChannel.onopen = () => console.log("Data Channel Ready");
+
+        // Negotiate WebRTC Offer
+        pc.createOffer().then(offer => {
+            return pc.setLocalDescription(offer);
+        }).then(() => {
+            let sdp = pc.localDescription.sdp;
+            let gameID = document.getElementById("gameID").value;
+
+            // FusedVR Custom SDP Hack: The C# script splits the second-to-last line of the SDP by '='
+            // to extract the gameID JSON payload. Here I must inject it directly
+            let customData = JSON.stringify({ user: gameID });
+            sdp += `a=${customData}\r\n`;
+
+            ws.send(JSON.stringify({ type: "offer", connectionId: connectionId, sdp: sdp }));
+        }).catch(err => console.error("WebRTC Error: ", err));
+    }
+
+    // --- 2. WEBXR & TRACKING DATA ---
+    enterVRBtn.onclick = () => scene.enterVR();
+
+    scene.addEventListener('enter-vr', () => sendVRMode(true));
+    scene.addEventListener('exit-vr', () => sendVRMode(false));
+
+    // Pack and transmit 3D pose arrays over the WebRTC Data Channel
+    function sendPose(sourceID, position, rotation) {
+        if (!dataChannel || dataChannel.readyState !== "open") return;
+
+        // FusedVR expects a 55 byte payload with Float32s at specific 8-byte intervals
+        let buffer = new ArrayBuffer(55);
+        let view = new DataView(buffer);
+
+        view.setUint8(0, 6);        // Device ID = 6 (VR_DEVICE_ID)
+        view.setUint8(1, 0);        // VRDataType = 0 (PosRot)
+        view.setUint8(2, sourceID); // Source (0=Head, 1=Left, 2=Right)
+
+        // Inject position & rotation floats at the exact byte offsets expected by C# BitConverter
+        view.setFloat32(3, position.x, true);
+        view.setFloat32(11, position.y, true);
+        view.setFloat32(19, position.z, true);
+
+        view.setFloat32(27, rotation.x, true);
+        view.setFloat32(35, rotation.y, true);
+        view.setFloat32(43, rotation.z, true);
+        view.setFloat32(51, rotation.w, true);
+
+        dataChannel.send(buffer);
+    }
+
+    // Notify C# when VR mode starts/stops
+    function sendVRMode(isEnter) {
+        if (!dataChannel || dataChannel.readyState !== "open") return;
+        let buffer = new ArrayBuffer(2);
+        let view = new DataView(buffer);
+        view.setUint8(0, 6);
+        view.setUint8(1, isEnter ? 4 : 5); // 4 = EnterVR, 5 = ExitVR
+        dataChannel.send(buffer);
+    }
+
+    // --- 3. MAIN RENDER LOOP ---
+    // Grab transform data from A-Frame every frame and send to Unity
+    setInterval(() => {
+        if (!dataChannel || dataChannel.readyState !== "open") return;
+
+        let head = document.getElementById('head').object3D;
+        let left = document.getElementById('leftHand').object3D;
+        let right = document.getElementById('rightHand').object3D;
+
+        sendPose(0, head.position, head.quaternion);   // Head
+        sendPose(1, left.position, left.quaternion);   // Left Hand
+        sendPose(2, right.position, right.quaternion); // Right Hand
+    }, 1000 / 60); // 60 FPS Target
+</script>
+</body>
+</html>
